@@ -1,0 +1,20 @@
+{
+	"name": "robot_assets",
+	// Use a Dockerfile so we can control the base image and dependencies.
+	"build": {
+		"dockerfile": "Dockerfile",
+		"context": ".."
+	},
+	"postCreateCommand": "",
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"ms-python.debugpy",
+				"ms-python.python",
+				"ms-python.black-formatter",
+				"mhutchie.git-graph",
+				"fill-labs.dependi"
+			]
+		}
+	}
+}

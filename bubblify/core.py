@@ -20,59 +20,90 @@ from viser import transforms as tf
 
 
 @dataclasses.dataclass
-class Sphere:
-    """Represents a collision sphere attached to a URDF link."""
+class Primitive:
+    """Represents a collision primitive attached to a URDF link."""
 
     id: int
     link: str
+    shape: str  # "sphere", "cuboid", "capsule"
     local_xyz: Tuple[float, float, float]
-    radius: float
+    local_rpy: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    radius: Optional[float] = None
+    length: Optional[float] = None
+    size: Optional[Tuple[float, float, float]] = None
     color: Tuple[int, int, int] = (255, 180, 60)
     node: Optional[viser.SceneNodeHandle] = dataclasses.field(default=None, repr=False)
 
 
-class SphereStore:
-    """Manages collection of spheres and their relationships to URDF links."""
+class PrimitiveStore:
+    """Manages collection of collision primitives and their relationships to URDF links."""
 
     def __init__(self):
         self._next_id = itertools.count(0)
-        self.by_id: Dict[int, Sphere] = {}
+        self.by_id: Dict[int, Primitive] = {}
         self.ids_by_link: Dict[str, List[int]] = {}
-        self.group_nodes: Dict[str, viser.FrameHandle] = {}  # /spheres/<link> parents
+        self.group_nodes: Dict[str, viser.FrameHandle] = {}  # /primitives/<link> parents
 
-    def add(self, link: str, xyz: Tuple[float, float, float] = (0.0, 0.0, 0.0), radius: float = 0.05) -> Sphere:
+    def add_sphere(
+        self, link: str, xyz: Tuple[float, float, float] = (0.0, 0.0, 0.0), radius: float = 0.05
+    ) -> Primitive:
         """Add a new sphere to the specified link."""
-        s = Sphere(id=next(self._next_id), link=link, local_xyz=xyz, radius=radius)
+        s = Primitive(id=next(self._next_id), link=link, shape="sphere", local_xyz=xyz, radius=radius)
         self.by_id[s.id] = s
         self.ids_by_link.setdefault(link, []).append(s.id)
         return s
 
-    def remove(self, sphere_id: int) -> Optional[Sphere]:
-        """Remove a sphere by ID."""
-        if sphere_id not in self.by_id:
+    def add_cuboid(
+        self,
+        link: str,
+        xyz: Tuple[float, float, float] = (0.0, 0.0, 0.0),
+        size: Tuple[float, float, float] = (0.05, 0.05, 0.05),
+    ) -> Primitive:
+        """Add a new cuboid to the specified link."""
+        c = Primitive(id=next(self._next_id), link=link, shape="cuboid", local_xyz=xyz, size=size)
+        self.by_id[c.id] = c
+        self.ids_by_link.setdefault(link, []).append(c.id)
+        return c
+
+    def add_capsule(
+        self,
+        link: str,
+        xyz: Tuple[float, float, float] = (0.0, 0.0, 0.0),
+        radius: float = 0.03,
+        length: float = 0.1,
+    ) -> Primitive:
+        """Add a new capsule to the specified link."""
+        c = Primitive(id=next(self._next_id), link=link, shape="capsule", local_xyz=xyz, radius=radius, length=length)
+        self.by_id[c.id] = c
+        self.ids_by_link.setdefault(link, []).append(c.id)
+        return c
+
+    def remove(self, primitive_id: int) -> Optional[Primitive]:
+        """Remove a primitive by ID."""
+        if primitive_id not in self.by_id:
             return None
 
-        sphere = self.by_id.pop(sphere_id)
-        self.ids_by_link[sphere.link].remove(sphere_id)
+        primitive = self.by_id.pop(primitive_id)
+        self.ids_by_link[primitive.link].remove(primitive_id)
 
         # Clean up empty link lists
-        if not self.ids_by_link[sphere.link]:
-            del self.ids_by_link[sphere.link]
+        if not self.ids_by_link[primitive.link]:
+            del self.ids_by_link[primitive.link]
 
         # Remove from scene
-        if sphere.node is not None:
-            sphere.node.remove()
+        if primitive.node is not None:
+            primitive.node.remove()
 
-        return sphere
+        return primitive
 
-    def get_spheres_for_link(self, link: str) -> List[Sphere]:
-        """Get all spheres attached to a specific link."""
+    def get_primitives_for_link(self, link: str) -> List[Primitive]:
+        """Get all primitives attached to a specific link."""
         return [self.by_id[sid] for sid in self.ids_by_link.get(link, [])]
 
     def clear(self):
-        """Remove all spheres."""
-        for sphere in list(self.by_id.values()):
-            self.remove(sphere.id)
+        """Remove all primitives."""
+        for primitive in list(self.by_id.values()):
+            self.remove(primitive.id)
 
 
 class EnhancedViserUrdf:
@@ -343,8 +374,8 @@ def _viser_name_from_frame(
     return "/".join(frames[::-1])
 
 
-def inject_spheres_into_urdf_xml(original_urdf_path: Optional[Path], urdf_obj: yourdfpy.URDF, store: SphereStore) -> str:
-    """Inject collision spheres into URDF XML, replacing all existing collision elements."""
+def inject_primitives_into_urdf_xml(original_urdf_path: Optional[Path], urdf_obj: yourdfpy.URDF, store: PrimitiveStore) -> str:
+    """Inject collision primitives into URDF XML, replacing all existing collision elements."""
     if original_urdf_path is not None:
         root = ET.parse(original_urdf_path).getroot()
     else:
@@ -361,20 +392,44 @@ def inject_spheres_into_urdf_xml(original_urdf_path: Optional[Path], urdf_obj: y
         for collision_elem in collision_elems:
             link_elem.remove(collision_elem)
 
-    # Add sphere collision elements
-    for link_name, sphere_ids in store.ids_by_link.items():
+    # Add primitive collision elements
+    for link_name, primitive_ids in store.ids_by_link.items():
         link_elem = link_elems.get(link_name)
         if link_elem is None:
             continue
 
-        for sphere_id in sphere_ids:
-            sphere = store.by_id[sphere_id]
-            coll = ET.SubElement(link_elem, "collision", {"name": f"sphere_{sphere.id}"})
+        for primitive_id in primitive_ids:
+            primitive = store.by_id[primitive_id]
+            coll = ET.SubElement(link_elem, "collision", {"name": f"{primitive.shape}_{primitive.id}"})
             origin = ET.SubElement(
-                coll, "origin", {"xyz": f"{sphere.local_xyz[0]} {sphere.local_xyz[1]} {sphere.local_xyz[2]}", "rpy": "0 0 0"}
+                coll,
+                "origin",
+                {
+                    "xyz": f"{primitive.local_xyz[0]} {primitive.local_xyz[1]} {primitive.local_xyz[2]}",
+                    "rpy": f"{primitive.local_rpy[0]} {primitive.local_rpy[1]} {primitive.local_rpy[2]}",
+                },
             )
             geom = ET.SubElement(coll, "geometry")
-            sph = ET.SubElement(geom, "sphere", {"radius": f"{sphere.radius}"})
+            if primitive.shape == "sphere":
+                radius = primitive.radius if primitive.radius is not None else 0.05
+                ET.SubElement(geom, "sphere", {"radius": f"{radius}"})
+            elif primitive.shape == "cuboid":
+                size = primitive.size or (0.05, 0.05, 0.05)
+                ET.SubElement(
+                    geom,
+                    "box",
+                    {"size": f"{size[0]} {size[1]} {size[2]}"},
+                )
+            elif primitive.shape == "capsule":
+                radius = primitive.radius if primitive.radius is not None else 0.03
+                length = primitive.length if primitive.length is not None else 0.1
+                ET.SubElement(
+                    geom,
+                    "capsule",
+                    {"radius": f"{radius}", "length": f"{length}"},
+                )
+            else:
+                raise ValueError(f"Unknown primitive shape: {primitive.shape}")
 
     # Pretty format the XML with proper indentation (Python 3.8 compatible)
     def indent_xml(elem, level=0, indent="  "):
@@ -398,3 +453,8 @@ def inject_spheres_into_urdf_xml(original_urdf_path: Optional[Path], urdf_obj: y
     # Add XML declaration and return
     xml_content = ET.tostring(root, encoding="unicode")
     return '<?xml version="1.0" encoding="utf-8"?>\n' + xml_content
+
+
+def inject_spheres_into_urdf_xml(original_urdf_path: Optional[Path], urdf_obj: yourdfpy.URDF, store: PrimitiveStore) -> str:
+    """Backward-compatible wrapper for old sphere-only injection."""
+    return inject_primitives_into_urdf_xml(original_urdf_path, urdf_obj, store)
